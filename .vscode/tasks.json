@@ -1,0 +1,21 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build adapter_screen (Debug x64)",
+			"type": "shell",
+			"command": "msbuild",
+			"args": [
+				"adapter_screen.vcxproj",
+				"/p:Configuration=Debug",
+				"/p:Platform=x64",
+				"/m",
+				"/v:minimal"
+			],
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		}
+	]
+}
