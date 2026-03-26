@@ -10,36 +10,6 @@
 
 #include "screen_adapter.h"
 
-/**
- * @brief AdaptiveMixin<BaseWidget> — CRTP mix-in template for screen
- * adaptation.
- *
- * Adds full screen-adaptation to any QWidget-derived class with a single
- * base-class substitution:
- *
- *   class MyWindow : public AdaptiveMixin<QWidget>   { Q_OBJECT ... };
- *   class MyDialog : public AdaptiveMixin<QDialog>   { Q_OBJECT ... };
- *
- * Capabilities provided automatically:
- *   - Responds to QWindow::screenChanged (window dragged to a different
- * monitor).
- *   - Responds to ScreenAdapter::ScaleChanged (resolution / DPI change).
- *   - Three geometry initialisation strategies (see below).
- *   - Optional recursive font scaling.
- *   - Android immersive full-screen helper.
- *
- * Geometry strategy A — design coordinates (auto-scaled):
- *   SetDesignGeometry(200, 100, 960, 600);
- *
- * Geometry strategy B — percentage of screen area:
- *   SetScreenPercent(0.80, 0.70);   // 80% wide, 70% tall, centred
- *
- * Geometry strategy C — full-screen (Android gets immersive mode):
- *   ShowAdaptiveFullScreen();
- *
- * NOTE: Template classes cannot contain Q_OBJECT, so signals/slots must be
- *       declared in the concrete subclass.
- */
 template <class BaseWidget>
 class AdaptiveMixin : public BaseWidget {
   static_assert(std::is_base_of<QWidget, BaseWidget>::value,
@@ -47,33 +17,17 @@ class AdaptiveMixin : public BaseWidget {
 
  public:
   explicit AdaptiveMixin(QWidget* parent = nullptr) : BaseWidget(parent) {
-    // Connect to the global ScaleChanged signal.
-    // Using 'this' as context ensures the connection is removed when the
-    // widget is destroyed, preventing dangling calls.
     QObject::connect(ScreenAdapter::Instance(), &ScreenAdapter::ScaleChanged,
                      this, [this] { OnAdaptLayout(); });
   }
 
-  /**
-   * @brief Strategy A: set geometry using design-space coordinates.
-   * @param x, y, w, h  Logical pixels in the design reference resolution.
-   *
-   * The coordinates are stored and re-applied whenever OnAdaptLayout() is
-   * called (e.g. after a monitor switch or system DPI change).
-   */
   void SetDesignGeometry(int x, int y, int w, int h) {
     design_rect_ = QRect(x, y, w, h);
     ScreenAdapter::Instance()->SetScaledGeometry(this, x, y, w, h);
   }
 
-  /**
-   * @brief Strategy B: size the widget as a fraction of the screen area and
-   * centre it.
-   * @param w_pct  Width fraction [0.0, 1.0].
-   * @param h_pct  Height fraction [0.0, 1.0].
-   */
   void SetScreenPercent(qreal w_pct, qreal h_pct) {
-    design_rect_ = QRect();  // clear fixed coords
+    design_rect_ = QRect();
     screen_w_pct_ = w_pct;
     screen_h_pct_ = h_pct;
     use_screen_pct_ = true;
@@ -82,9 +36,15 @@ class AdaptiveMixin : public BaseWidget {
     ScreenAdapter::Instance()->CenterOnScreen(this);
   }
 
-  /**
-   * @brief Strategy C: show full-screen; on Android also enters immersive mode.
-   */
+  // Default true to preserve existing behaviour.
+  // Set false to avoid resize-fighting while dragging windows across monitors.
+  void SetResizeOnScaleChange(bool enable) { resize_on_scale_change_ = enable; }
+
+  // Default false: do not force recenter when monitor/DPI changes.
+  // Keeping this off avoids geometry-fighting while user drags windows
+  // across monitors with different DPI.
+  void SetRecenterOnScaleChange(bool enable) { recenter_on_scale_change_ = enable; }
+
   void ShowAdaptiveFullScreen() {
     is_full_screen_ = true;
 #ifdef SA_ANDROID
@@ -93,61 +53,29 @@ class AdaptiveMixin : public BaseWidget {
     BaseWidget::showFullScreen();
   }
 
-  // ─────────────────────────────────────────────────────────────────────
-  //  Options
-  // ─────────────────────────────────────────────────────────────────────
-
-  /**
-   * @brief Enable / disable automatic recursive font scaling on show and
-   *        on every ScaleChanged event.  Default: disabled.
-   */
   void SetAutoFontScale(bool enable) { auto_font_scale_ = enable; }
 
  protected:
-  // ─────────────────────────────────────────────────────────────────────
-  //  Override this to re-position child widgets after a scale change.
-  // ─────────────────────────────────────────────────────────────────────
-
-  /**
-   * @brief Called whenever scale factors change (monitor switch, DPI change).
-   *
-   * Default implementation re-applies whichever geometry strategy was set.
-   * If you use Qt layout managers (QVBoxLayout, QGridLayout, ...) you often
-   * do NOT need to override this — the layout engine resizes children for you.
-   *
-   * When you do override, call the base first (optional) then re-set child
-   * geometries using SR() / SS() / SFS():
-   * @code
-   * void MyWindow::OnAdaptLayout() {
-   *     AdaptiveMixin<QWidget>::OnAdaptLayout(); // resize the window itself
-   *     btn_->setGeometry(SR(10, 10, 120, 40));
-   *     lbl_->setFont(QFont("Arial", SFS(14)));
-   * }
-   * @endcode
-   */
   virtual void OnAdaptLayout() {
     if (is_full_screen_) {
       BaseWidget::showFullScreen();
     } else if (use_screen_pct_) {
-      ScreenAdapter::Instance()->ResizeByScreenPercent(this, screen_w_pct_,
-                                                       screen_h_pct_);
-      ScreenAdapter::Instance()->CenterOnScreen(this);
+      if (resize_on_scale_change_) {
+        ScreenAdapter::Instance()->ResizeByScreenPercent(this, screen_w_pct_,
+                                                         screen_h_pct_);
+      }
+      if (recenter_on_scale_change_) {
+        ScreenAdapter::Instance()->CenterOnScreen(this);
+      }
     } else if (design_rect_.isValid()) {
       ScreenAdapter::Instance()->SetScaledGeometry(
           this, design_rect_.x(), design_rect_.y(), design_rect_.width(),
           design_rect_.height());
     }
-    // Pure Qt-layout windows: nothing extra needed here.
   }
-
-  // ─────────────────────────────────────────────────────────────────────
-  //  Qt event overrides
-  // ─────────────────────────────────────────────────────────────────────
 
   void showEvent(QShowEvent* e) override {
     BaseWidget::showEvent(e);
-
-    // The QWindow handle is valid from the first showEvent; connect here.
     ConnectScreenSignal();
 
     if (auto_font_scale_)
@@ -155,20 +83,16 @@ class AdaptiveMixin : public BaseWidget {
 
 #ifdef SA_ANDROID
     if (is_full_screen_)
-      ScreenAdapter::SetFullScreen();  // Re-assert; system can reset it.
+      ScreenAdapter::SetFullScreen();
 #endif
   }
 
   bool event(QEvent* e) override {
-    // WinIdChange fires when the QWindow is created or re-parented.
     if (e->type() == QEvent::WinIdChange) ConnectScreenSignal();
     return BaseWidget::event(e);
   }
 
  private:
-  // ─────────────────────────────────────────────────────────────────────
-  //  Per-monitor signal management
-  // ─────────────────────────────────────────────────────────────────────
   void ConnectScreenSignal() {
     QWindow* win = BaseWidget::windowHandle();
     if (!win || win == tracked_window_) return;
@@ -177,17 +101,16 @@ class AdaptiveMixin : public BaseWidget {
 
     tracked_window_ = win;
 
-    // QWindow::screenChanged fires when:
-    //   Windows 10/11 — WM_DPICHANGED (Per-Monitor DPI Awareness v2).
-    //   Linux X11      — RRNotify when the window crosses monitor boundaries.
-    //   Linux Wayland  — wl_surface::enter on a different output.
     screen_conn_ = QObject::connect(
         win, &QWindow::screenChanged, this, [this](QScreen* screen) {
-          // Only recompute global scale factors when the feature is on.
           if (ScreenAdapter::Instance()->IsPerScreenDpiEnabled()) {
             ScreenAdapter::Instance()->RefreshForScreen(screen);
+          } else {
+            // If per-screen DPI is disabled, no ScaleChanged will be emitted.
+            // Keep a single local adaptation pass in this branch only.
+            OnAdaptLayout();
           }
-          OnAdaptLayout();
+
           if (auto_font_scale_)
             ScreenAdapter::Instance()->ApplyFontScaleRecursive(this);
 #ifdef SA_ANDROID
@@ -196,42 +119,19 @@ class AdaptiveMixin : public BaseWidget {
         });
   }
 
-  // ─────────────────────────────────────────────────────────────────────
-  //  State
-  // ─────────────────────────────────────────────────────────────────────
-  QRect design_rect_;                    ///< Strategy A design coords
-  qreal screen_w_pct_ = 0.8;             ///< Strategy B width fraction
-  qreal screen_h_pct_ = 0.8;             ///< Strategy B height fraction
-  bool use_screen_pct_ = false;          ///< Using strategy B?
-  bool is_full_screen_ = false;          ///< Using strategy C?
-  bool auto_font_scale_ = false;         ///< Auto font scaling enabled?
-  QWindow* tracked_window_ = nullptr;    ///< QWindow we've connected
-  QMetaObject::Connection screen_conn_;  ///< screenChanged connection
+  QRect design_rect_;
+  qreal screen_w_pct_ = 0.8;
+  qreal screen_h_pct_ = 0.8;
+  bool use_screen_pct_ = false;
+  bool is_full_screen_ = false;
+  bool auto_font_scale_ = false;
+  bool resize_on_scale_change_ = true;
+  bool recenter_on_scale_change_ = false;
+  QWindow* tracked_window_ = nullptr;
+  QMetaObject::Connection screen_conn_;
 };
 
-using AdaptiveWidget = AdaptiveMixin<QWidget>;  ///< Adaptive QWidget
-using AdaptiveDialog = AdaptiveMixin<QDialog>;  ///< Adaptive QDialog
-
-#ifdef SA_ANDROID
-/**
- * @brief AndroidFullWidget — convenience base for always-immersive Android
- * views.
- *
- * Automatically: frameless, full-screen, immersive mode.
- */
-class AndroidFullWidget : public AdaptiveMixin<QWidget> {
- public:
-  explicit AndroidFullWidget(QWidget* parent = nullptr)
-      : AdaptiveMixin<QWidget>(parent) {
-    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
-  }
-
- protected:
-  void showEvent(QShowEvent* e) override {
-    AdaptiveMixin<QWidget>::showEvent(e);
-    ShowAdaptiveFullScreen();
-  }
-};
-#endif  // SA_ANDROID
+using AdaptiveWidget = AdaptiveMixin<QWidget>;
+using AdaptiveDialog = AdaptiveMixin<QDialog>;
 
 #endif  // ADAPTIVE_MIXIN_H

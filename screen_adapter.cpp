@@ -161,7 +161,6 @@ QScreen* ScreenAdapter::ScreenOf(const QWidget* w) {
       const_cast<QWidget*>(w)->mapToGlobal(w->rect().center()));
 
 #else
-  // Qt < 5.10: primary screen only.
   Q_UNUSED(w)
   return QApplication::primaryScreen();
 #endif
@@ -261,7 +260,6 @@ void ScreenAdapter::OnScreenGeometryChanged(const QRect& /*new_geometry*/) {
 
 namespace {
 
-// Android View / WindowManager flags (from android.view.View.java)
 static constexpr jint k_flag_fullscreen = 0x00000400;
 static constexpr jint k_flag_keep_screen_on = 0x00000080;
 static constexpr jint k_ui_layout_stable = 0x00000010;
